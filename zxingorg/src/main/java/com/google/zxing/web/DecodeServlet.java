@@ -63,6 +63,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import javax.imageio.ImageIO;
+import javax.servlet.RequestDispatcher;
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
@@ -80,20 +81,20 @@ import javax.servlet.http.Part;
  * @author Sean Owen
  */
 @MultipartConfig(
-    maxFileSize = 10_000_000,
-    maxRequestSize = 10_000_000,
-    fileSizeThreshold = 1_000_000,
+    maxFileSize = 1L << 26, // ~64MB
+    maxRequestSize = 1L << 26, // ~64MB
+    fileSizeThreshold = 1 << 23, // ~8MB
     location = "/tmp")
 @WebServlet(value = "/w/decode", loadOnStartup = 1)
 public final class DecodeServlet extends HttpServlet {
 
   private static final Logger log = Logger.getLogger(DecodeServlet.class.getName());
 
-  // No real reason to let people upload more than a 10MB image
-  private static final long MAX_IMAGE_SIZE = 10_000_000L;
-  // No real reason to deal with more than maybe 10 megapixels
-  private static final int MAX_PIXELS = 10_000_000;
-  private static final byte[] REMAINDER_BUFFER = new byte[32768];
+  // No real reason to let people upload more than ~64MB
+  private static final long MAX_IMAGE_SIZE = 1L << 26;
+  // No real reason to deal with more than ~32 megapixels
+  private static final int MAX_PIXELS = 1 << 25;
+  private static final byte[] REMAINDER_BUFFER = new byte[1 << 16];
   private static final Map<DecodeHintType,Object> HINTS;
   private static final Map<DecodeHintType,Object> HINTS_PURE;
 
@@ -161,12 +162,21 @@ public final class DecodeServlet extends HttpServlet {
     
     // Shortcut for data URI
     if ("data".equals(imageURI.getScheme())) {
+      BufferedImage image = null;
       try {
-        BufferedImage image = ImageReader.readDataURIImage(imageURI);
-        processImage(image, request, response);
-      } catch (IOException ioe) {
-        log.info(ioe.toString());
+        image = ImageReader.readDataURIImage(imageURI);
+      } catch (IOException | IllegalStateException e) {
+        log.info(e.toString());
         errorResponse(request, response, "badurl");
+      }
+      if (image == null) {
+        errorResponse(request, response, "badimage");
+        return;
+      }
+      try {
+        processImage(image, request, response);
+      } finally {
+        image.flush();
       }
       return;
     }
@@ -227,6 +237,13 @@ public final class DecodeServlet extends HttpServlet {
           errorResponse(request, response, "badimage");
           return;
         }
+        // Assume we'll only handle image/* content types
+        String contentType = connection.getContentType();
+        if (contentType != null && !contentType.startsWith("image/")) {
+          log.info("Wrong content type: " + contentType);
+          errorResponse(request, response, "badimage");
+          return;
+        }
 
         log.info("Decoding " + imageURL);
         processStream(is, request, response);
@@ -244,9 +261,8 @@ public final class DecodeServlet extends HttpServlet {
 
   private static void consumeRemainder(InputStream is) {
     try {
-      int available;
-      while ((available = is.available()) > 0) {
-        is.read(REMAINDER_BUFFER, 0, available); // don't care about value, or collision
+      while (is.read(REMAINDER_BUFFER) > 0) {
+        // don't care about value, or collision
       }
     } catch (IOException | IndexOutOfBoundsException ioe) {
       // sun.net.www.http.ChunkedInputStream.read is throwing IndexOutOfBoundsException
@@ -280,7 +296,7 @@ public final class DecodeServlet extends HttpServlet {
       log.info("File upload was not multipart");
       errorResponse(request, response, "badimage");
     } else {
-      log.info("Decoding uploaded file");
+      log.info("Decoding uploaded file " + fileUploadPart.getSubmittedFileName());
       try (InputStream is = fileUploadPart.getInputStream()) {
         processStream(is, request, response);
       }
@@ -304,14 +320,19 @@ public final class DecodeServlet extends HttpServlet {
       errorResponse(request, response, "badimage");
       return;
     }
-    if (image.getHeight() <= 1 || image.getWidth() <= 1 ||
-        image.getHeight() * image.getWidth() > MAX_PIXELS) {
-      log.info("Dimensions out of bounds: " + image.getWidth() + 'x' + image.getHeight());
-      errorResponse(request, response, "badimage");
-      return;
+    try {
+      int height = image.getHeight();
+      int width = image.getWidth();
+      if (height <= 1 || width <= 1 || height * width > MAX_PIXELS) {
+        log.info("Dimensions out of bounds: " + width + 'x' + height);
+        errorResponse(request, response, "badimage");
+        return;
+      }
+
+      processImage(image, request, response);
+    } finally {
+      image.flush();
     }
-    
-    processImage(image, request, response);
   }
   
   private static void processImage(BufferedImage image,
@@ -378,10 +399,10 @@ public final class DecodeServlet extends HttpServlet {
         try {
           throw savedException == null ? NotFoundException.getNotFoundInstance() : savedException;
         } catch (FormatException | ChecksumException e) {
-          log.info(e.getMessage());
+          log.info(e.toString());
           errorResponse(request, response, "format");
         } catch (ReaderException e) { // Including NotFoundException
-          log.info(e.getMessage());
+          log.info(e.toString());
           errorResponse(request, response, "notfound");
         }
         return;
@@ -422,7 +443,12 @@ public final class DecodeServlet extends HttpServlet {
     String text = bundle.getString("response.error." + key + ".text");
     request.setAttribute("title", title);
     request.setAttribute("text", text);
-    request.getRequestDispatcher("response.jspx").forward(request, response);
+    RequestDispatcher dispatcher = request.getRequestDispatcher("response.jspx");
+    if (dispatcher == null) {
+      log.warning("Can't obtain RequestDispatcher");
+    } else {
+      dispatcher.forward(request, response);
+    }
   }
 
 }

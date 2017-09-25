@@ -19,15 +19,19 @@ package com.google.zxing.client.android.camera.open;
 import android.hardware.Camera;
 import android.util.Log;
 
+/**
+ * Abstraction over the {@link Camera} API that helps open them and return their metadata.
+ */
+@SuppressWarnings("deprecation") // camera APIs
 public final class OpenCameraInterface {
 
   private static final String TAG = OpenCameraInterface.class.getName();
 
-  private OpenCameraInterface() {
-  }
-
   /** For {@link #open(int)}, means no preference for which camera to open. */
   public static final int NO_REQUESTED_CAMERA = -1;
+
+  private OpenCameraInterface() {
+  }
 
   /**
    * Opens the requested camera with {@link Camera#open(int)}, if one exists.

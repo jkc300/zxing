@@ -43,20 +43,19 @@ import java.util.logging.Logger;
  *
  * @author Sean Owen
  */
-@WebFilter("/w/decode")
+@WebFilter({"/w/decode", "/w/chart"})
 public final class DoSFilter implements Filter {
 
   private static final Logger log = Logger.getLogger(DoSFilter.class.getName());
 
-  private static final int MAX_ACCESSES_PER_IP_PER_TIME = 10;
+  private static final int MAX_ACCESSES_PER_IP_PER_TIME = 100;
   private static final int MAX_RECENT_ACCESS_MAP_SIZE = 100_000;
 
-  private Map<String,AtomicInteger> numRecentAccesses;
-  private Set<String> bannedIPAddresses;
+  private final Map<String,AtomicInteger> numRecentAccesses;
+  private final Set<String> bannedIPAddresses;
   private Timer timer;
 
-  @Override
-  public void init(FilterConfig filterConfig) {
+  public DoSFilter() {
     numRecentAccesses = Collections.synchronizedMap(new LinkedHashMap<String,AtomicInteger>() {
       @Override
       protected boolean removeEldestEntry(Map.Entry<String,AtomicInteger> eldest) {
@@ -64,6 +63,10 @@ public final class DoSFilter implements Filter {
       }
     });
     bannedIPAddresses = Collections.synchronizedSet(new HashSet<String>());
+  }
+
+  @Override
+  public void init(FilterConfig filterConfig) {
     timer = new Timer("DoSFilter reset timer");
     timer.scheduleAtFixedRate(
         new TimerTask() {
@@ -77,6 +80,13 @@ public final class DoSFilter implements Filter {
           @Override
           public void run() {
             bannedIPAddresses.clear();
+          }
+        }, 0L, TimeUnit.MILLISECONDS.convert(15, TimeUnit.MINUTES));
+    timer.scheduleAtFixedRate(
+        new TimerTask() {
+          @Override
+          public void run() {
+            System.gc();
           }
         }, 0L, TimeUnit.MILLISECONDS.convert(15, TimeUnit.MINUTES));
   }
@@ -110,20 +120,20 @@ public final class DoSFilter implements Filter {
   }
 
   private int getCount(String remoteIPAddress) {
-    synchronized (numRecentAccesses) {
-      AtomicInteger count = numRecentAccesses.get(remoteIPAddress);
-      if (count == null) {
-        numRecentAccesses.put(remoteIPAddress, new AtomicInteger(1));
-        return 1;
-      } else {
-        return count.incrementAndGet();
-      }
+    AtomicInteger count = numRecentAccesses.get(remoteIPAddress);
+    if (count == null) {
+      numRecentAccesses.put(remoteIPAddress, new AtomicInteger(1));
+      return 1;
+    } else {
+      return count.incrementAndGet();
     }
   }
 
   @Override
   public void destroy() {
-    timer.cancel();
+    if (timer != null) {
+      timer.cancel();
+    }
   }
 
 }
